@@ -520,8 +520,9 @@ balanceNonAdaAssets addr = do
   TransactionBuilder {..} <- getTransactionBuilder
   let
     inputValue = mconcat $ map (utxoValue . iUtxo) tInputs
+    mintValue = mconcat $ map mValue tMint
     outputValue = mconcat $ map oValue tOutputs
-    theDiffValue = inputValue `diffValues` outputValue
+    theDiffValue = inputValue <> mintValue `diffValues` outputValue
 
     -- Make sure there are non-ada assets in there
     (Value ada, Value nonAda) = splitNonAdaAssets theDiffValue
@@ -545,8 +546,9 @@ balanceAllAssets addr = do
   TransactionBuilder {..} <- getTransactionBuilder
   let
     inputValue = mconcat $ map (utxoValue . iUtxo) tInputs
+    mintValue = mconcat $ map mValue tMint
     outputValue = mconcat $ map oValue tOutputs
-    theDiffValue = inputValue `diffValues` outputValue
+    theDiffValue = inputValue <> mintValue `diffValues` outputValue
 
     -- Make sure there are non-ada assets in there
 
