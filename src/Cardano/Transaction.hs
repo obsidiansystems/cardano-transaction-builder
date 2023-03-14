@@ -1,7 +1,9 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Cardano.Transaction where
 
+import System.Which
 import qualified Data.Map.Strict as M
 import           Data.Map (Map)
 import           Control.Monad.Managed
@@ -439,11 +441,13 @@ parseNonNativeTokens = do
 
   pure $ Value $ foldr (\(theCount, policyId, tokenName) acc -> M.insertWith (<>) policyId (M.singleton tokenName theCount) acc) mempty countsAndAssets
 
+cardanoCliPath :: FilePath
+cardanoCliPath = $(staticWhich "cardano-cli")
 
 queryUtxos :: Address -> Maybe Integer -> IO [UTxO]
 queryUtxos address mTestnet =
   let
-    p = proc "cardano-cli" $
+    p = proc cardanoCliPath $
       [ "query"
       , "utxo"
       , "--address"
@@ -473,7 +477,7 @@ hashDatum :: Aeson.Value -> IO String
 hashDatum value = withSystemTempFile "datum" $ \datumFile fh -> do
   BSL.hPutStr fh $ Aeson.encode value
   hClose fh
-  fmap (trim . BSLC.unpack) . readProcessStdout_ . proc "cardano-cli" $
+  fmap (trim . BSLC.unpack) . readProcessStdout_ . proc cardanoCliPath $
     [ "transaction"
     , "hash-script-data"
     , "--script-data-file"
@@ -624,7 +628,7 @@ currentSlotIO mTestnet = do
          )
           . (Aeson.eitherDecode :: BSL.ByteString -> Either String Aeson.Value)
           =<< do
-    readProcessStdout_ . proc "cardano-cli" $
+    readProcessStdout_ . proc cardanoCliPath $
       [ "query"
       , "tip"
       ] <>
@@ -968,7 +972,7 @@ eval EvalConfig {..} (Tx m) =
   let
     runCardanoCli args = do
       print args
-      (exitCode, outStr) <- readProcessInterleaved . proc "cardano-cli" $ args
+      (exitCode, outStr) <- readProcessInterleaved . proc cardanoCliPath $ args
       case exitCode of
         ExitSuccess -> pure $ BSLC.unpack outStr
         ExitFailure _ -> liftIO . throwIO . EvalException "cardano-cli" args . BSLC.unpack $ outStr
@@ -1000,7 +1004,7 @@ evalRaw EvalConfig {..} fee (Tx m) =
   let
     runCardanoCli args = do
       print args
-      (exitCode, outStr) <- readProcessInterleaved . proc "cardano-cli" $ args
+      (exitCode, outStr) <- readProcessInterleaved . proc cardanoCliPath $ args
       case exitCode of
         ExitSuccess -> pure $ BSLC.unpack outStr
         ExitFailure _ -> liftIO . throwIO . EvalException "cardano-cli" args . BSLC.unpack $ outStr

@@ -45,6 +45,7 @@ library
     , transformers
     , typed-process
     , megaparsec
+    , which
 
   hs-source-dirs:     src
   default-language:   Haskell2010
