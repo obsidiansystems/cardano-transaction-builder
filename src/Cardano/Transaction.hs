@@ -202,10 +202,14 @@ instance Semigroup TimeRange where
         (Just  x, Just  y) -> Just $ max x y
     }
 
+data MintScript
+  = MintScriptSimple FilePath
+  | MintScriptPlutus FilePath Aeson.Value
+  deriving (Show, Eq, Ord, Generic)
+
 data Mint = Mint
   { mValue :: Value
-  , mScript :: FilePath
-  , mRedeemer :: Aeson.Value
+  , mScript :: MintScript
   } deriving (Show, Eq, Ord, Generic)
 
 data TransactionBuilder = TransactionBuilder
@@ -258,8 +262,11 @@ putpend tb = modify (<> tb)
 getTransactionBuilder :: Tx TransactionBuilder
 getTransactionBuilder = get
 
+mintSimple :: Value -> FilePath -> Tx ()
+mintSimple v s = putpend $ mempty { tMint = pure . Mint v . MintScriptSimple $ s}
+
 mint :: Aeson.ToJSON a => Value -> FilePath -> a -> Tx ()
-mint v s r = putpend $ mempty { tMint = pure . Mint v s . Aeson.toJSON $ r}
+mint v s r = putpend $ mempty { tMint = pure . Mint v . MintScriptPlutus s . Aeson.toJSON $ r}
 
 sign :: FilePath -> Tx ()
 sign x = putpend $ mempty { tSignatures = [x] }
@@ -858,13 +865,16 @@ toMintFlags :: Mint -> [String]
 toMintFlags Mint{..}
   | mValue == mempty = []
   | otherwise =
-    [ "--mint"
-    , pprValue mValue
-    , "--minting-script-file"
-    , mScript
-    , "--mint-redeemer-value"
-    , pprJson mRedeemer
-    ]
+    [ "--mint", pprValue mValue ]
+    <> case mScript of
+      MintScriptSimple script ->
+       [ "--minting-script-file", script ]
+      MintScriptPlutus script mRedeemer ->
+       [ "--minting-script-file"
+       , script
+       , "--mint-redeemer-value"
+       , pprJson mRedeemer
+       ]
 
 mintsToFlags :: [Mint] -> [String]
 mintsToFlags = concatMap toMintFlags
