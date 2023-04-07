@@ -979,6 +979,25 @@ instance Semigroup EvalConfig where
 instance Monoid EvalConfig where
   mempty = EvalConfig Nothing Nothing Nothing False
 
+evalTx :: EvalConfig -> Tx () -> IO String
+evalTx EvalConfig {..} (Tx m) =
+  let
+    runCardanoCli args = do
+      print args
+      (exitCode, outStr) <- readProcessInterleaved . proc cardanoCliPath $ args
+      case exitCode of
+        ExitSuccess -> pure $ BSLC.unpack outStr
+        ExitFailure _ -> liftIO . throwIO . EvalException "cardano-cli" args . BSLC.unpack $ outStr
+
+  in flip with pure $ do
+    tempDir <- maybe (managed (withSystemTempDirectory "tx-builder")) pure ecOutputDir
+    txBuilder <- liftIO . execStateT (runReaderT m ecTestnet) $ mempty
+    bodyFlags <- transactionBuilderToBuildFlags tempDir ecTestnet ecProtocolParams ecUseRequiredSigners txBuilder
+
+    liftIO $ do
+      void $ runCardanoCli bodyFlags
+      readFile $ tempDir </> "body.txt"
+
 eval :: EvalConfig -> Tx () -> IO String
 eval EvalConfig {..} (Tx m) =
   let
