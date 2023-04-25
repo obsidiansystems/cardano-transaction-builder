@@ -252,11 +252,19 @@ instance Monoid TransactionBuilder where
     , tCollateral     = mempty
     }
 
-newtype Tx a = Tx { unTx :: ReaderT (Maybe Integer) (StateT TransactionBuilder IO) a }
-  deriving(Functor, Applicative, Monad, MonadIO, MonadState TransactionBuilder, MonadReader (Maybe Integer))
+data ChainInfo = ChainInfo
+  { chainInfo_magic :: Maybe Integer
+  , chainInfo_socket :: Maybe FilePath
+  }
+
+newtype Tx a = Tx { unTx :: ReaderT ChainInfo (StateT TransactionBuilder IO) a }
+  deriving(Functor, Applicative, Monad, MonadIO, MonadState TransactionBuilder, MonadReader ChainInfo)
 
 getTestnetConfig :: Tx (Maybe Integer)
-getTestnetConfig = ask
+getTestnetConfig = asks chainInfo_magic
+
+getNodeSocket :: Tx (Maybe FilePath)
+getNodeSocket = asks chainInfo_socket
 
 putpend :: TransactionBuilder -> Tx ()
 putpend tb = modify (<> tb)
@@ -451,10 +459,10 @@ parseNonNativeTokens = do
 cardanoCliPath :: FilePath
 cardanoCliPath = $(staticWhich "cardano-cli")
 
-queryUtxos :: Address -> Maybe Integer -> IO [UTxO]
-queryUtxos address mTestnet =
+queryUtxos :: Address -> ChainInfo -> IO [UTxO]
+queryUtxos address (ChainInfo mTestnet mSocket) =
   let
-    p = proc cardanoCliPath $
+    p = setSocketPath mSocket $ proc cardanoCliPath $
       [ "query"
       , "utxo"
       , "--address"
@@ -471,8 +479,8 @@ findScriptInputs
   -> UTxODatum
   -> Tx [UTxO]
 findScriptInputs address datum = do
-  testnetConfig <- getTestnetConfig
-  liftIO $ filter ((== datum) . utxoDatum) <$> queryUtxos address testnetConfig
+  info <- ask
+  liftIO $ filter ((== datum) . utxoDatum) <$> queryUtxos address info
 
 hashScript :: FilePath -> IO Address
 hashScript plutusFile = readFile $ replaceExtension plutusFile "addr"
@@ -567,8 +575,8 @@ selectInputs :: Value
              -- ^ The inputs and the remaining unfilled outputs
 selectInputs outputValue address = do
   -- lookup inputs for the address
-  testnetConfig <- ask
-  inputs <- map inputFromUTxO <$> liftIO (queryUtxos address testnetConfig)
+  info <- ask
+  inputs <- map inputFromUTxO <$> liftIO (queryUtxos address info)
 
   putpend $ mempty { tInputs = inputs }
   -- Merge the utxos values
@@ -619,8 +627,8 @@ selectAllInputsAndSelfBalance addr = do
 selectCollateralInput :: Address -> Tx (Input, Value)
 selectCollateralInput addr = do
   -- lookup inputs for the address
-  testnetConfig <- ask
-  inputs <- map inputFromUTxO <$> liftIO (queryUtxos addr testnetConfig)
+  info <- ask
+  inputs <- map inputFromUTxO <$> liftIO (queryUtxos addr info)
   let lovelaces :: Input -> Integer
       lovelaces = fromMaybe 0 . M.lookup "" . fromMaybe mempty . M.lookup "" . unValue . utxoValue . iUtxo
   let i@Input {..} = maximumBy (compare `on` lovelaces) inputs
@@ -629,15 +637,15 @@ selectCollateralInput addr = do
 
   pure (i, utxoValue iUtxo)
 
-currentSlotIO :: Maybe Integer -> IO Slot
-currentSlotIO mTestnet = do
+currentSlotIO :: ChainInfo -> IO Slot
+currentSlotIO (ChainInfo mTestnet mSocket) = do
   either (\x -> throwIO $ userError $ "could not parse tip" <> x)
          ( maybe (throwIO $ userError "could not find slot") pure
          . L.preview (AL.key "slot" . AL._Number . L.to floor)
          )
           . (Aeson.eitherDecode :: BSL.ByteString -> Either String Aeson.Value)
           =<< do
-    readProcessStdout_ . proc cardanoCliPath $
+    readProcessStdout_ . setSocketPath mSocket . proc cardanoCliPath $
       [ "query"
       , "tip"
       ] <>
@@ -646,8 +654,8 @@ currentSlotIO mTestnet = do
 
 currentSlot :: Tx Slot
 currentSlot = do
-  mTestnet <- ask
-  liftIO $ currentSlotIO mTestnet
+  info <- ask
+  liftIO $ currentSlotIO info
 
 
 output :: Address
@@ -669,6 +677,19 @@ outputWithHash a v d = do
   putpend $
     mempty
       { tOutputs = [Output a v (OutputDatumHash datumHash) Nothing] }
+
+
+outputWithDatumHash
+  :: Address
+  -> Value
+  -> DatumHash
+  -> Tx Output
+outputWithDatumHash a v dh = do
+  let out = Output a v (OutputDatumHash dh) Nothing
+  putpend $
+    mempty
+    { tOutputs = [out] }
+  pure out
 
 outputWithDatum
           :: A.ToData d
@@ -706,19 +727,19 @@ outputWithScriptReference a v fp = do
 -- merge the values
 account :: Address -> Tx Value
 account address = do
-  mTestnet <- ask
-  utxos <- liftIO $ queryUtxos address mTestnet
+  info <- ask
+  utxos <- liftIO $ queryUtxos address info
   pure $ mconcat $ map utxoValue utxos
 
 
-waitForNextBlock :: Maybe Integer -> IO ()
-waitForNextBlock mTestnet = do
-  start <- currentSlotIO mTestnet
+waitForNextBlock :: ChainInfo -> IO ()
+waitForNextBlock info = do
+  start <- currentSlotIO info
   putStrLn . mconcat $ [ "start slot is: ", show start ]
   liftIO $ fix $ \next -> do
     putStrLn "waiting 1s"
     threadDelay 1_000_000
-    nextSlot <- currentSlotIO mTestnet
+    nextSlot <- currentSlotIO info
     putStrLn . mconcat $ [ "current slot is: ", show nextSlot ]
     when (start == nextSlot) next
 
@@ -966,6 +987,7 @@ data EvalConfig = EvalConfig
   , ecTestnet            :: Maybe Integer
   , ecProtocolParams     :: Maybe FilePath
   , ecUseRequiredSigners :: Bool
+  , ecSocketPath         :: Maybe FilePath
   } deriving (Show, Eq, Generic)
 
 instance Semigroup EvalConfig where
@@ -974,24 +996,28 @@ instance Semigroup EvalConfig where
     , ecTestnet            = ecTestnet            x <|> ecTestnet            y
     , ecProtocolParams     = ecProtocolParams     x <|> ecProtocolParams     y
     , ecUseRequiredSigners = ecUseRequiredSigners x ||  ecUseRequiredSigners y
+    , ecSocketPath         = ecSocketPath         x <|> ecSocketPath         y
     }
 
 instance Monoid EvalConfig where
-  mempty = EvalConfig Nothing Nothing Nothing False
+  mempty = EvalConfig Nothing Nothing Nothing False Nothing
+
+setSocketPath :: Maybe FilePath -> ProcessConfig stdin stdout stderr -> ProcessConfig stdin stdout stderr
+setSocketPath mfp = setEnv (maybe [] (\fp -> [("CARDANO_NODE_SOCKET_PATH", fp)]) mfp)
 
 evalTx :: EvalConfig -> Tx () -> IO String
 evalTx EvalConfig {..} (Tx m) =
   let
     runCardanoCli args = do
       print args
-      (exitCode, outStr) <- readProcessInterleaved . proc cardanoCliPath $ args
+      (exitCode, outStr) <- readProcessInterleaved . setSocketPath ecSocketPath . proc cardanoCliPath $ args
       case exitCode of
         ExitSuccess -> pure $ BSLC.unpack outStr
         ExitFailure _ -> liftIO . throwIO . EvalException "cardano-cli" args . BSLC.unpack $ outStr
 
   in flip with pure $ do
     tempDir <- maybe (managed (withSystemTempDirectory "tx-builder")) pure ecOutputDir
-    txBuilder <- liftIO . execStateT (runReaderT m ecTestnet) $ mempty
+    txBuilder <- liftIO . execStateT (runReaderT m (ChainInfo ecTestnet ecSocketPath)) $ mempty
     bodyFlags <- transactionBuilderToBuildFlags tempDir ecTestnet ecProtocolParams ecUseRequiredSigners txBuilder
 
     liftIO $ do
@@ -1003,14 +1029,14 @@ eval EvalConfig {..} (Tx m) =
   let
     runCardanoCli args = do
       print args
-      (exitCode, outStr) <- readProcessInterleaved . proc cardanoCliPath $ args
+      (exitCode, outStr) <- readProcessInterleaved . setSocketPath ecSocketPath . proc cardanoCliPath $ args
       case exitCode of
         ExitSuccess -> pure $ BSLC.unpack outStr
         ExitFailure _ -> liftIO . throwIO . EvalException "cardano-cli" args . BSLC.unpack $ outStr
 
   in flip with pure $ do
     tempDir <- maybe (managed (withSystemTempDirectory "tx-builder")) pure ecOutputDir
-    txBuilder <- liftIO . execStateT (runReaderT m ecTestnet) $ mempty
+    txBuilder <- liftIO . execStateT (runReaderT m (ChainInfo ecTestnet ecSocketPath)) $ mempty
     bodyFlags <- transactionBuilderToBuildFlags tempDir ecTestnet ecProtocolParams ecUseRequiredSigners txBuilder
 
     liftIO $ do
@@ -1035,14 +1061,14 @@ evalRaw EvalConfig {..} fee (Tx m) =
   let
     runCardanoCli args = do
       print args
-      (exitCode, outStr) <- readProcessInterleaved . proc cardanoCliPath $ args
+      (exitCode, outStr) <- readProcessInterleaved . setSocketPath ecSocketPath . proc cardanoCliPath $ args
       case exitCode of
         ExitSuccess -> pure $ BSLC.unpack outStr
         ExitFailure _ -> liftIO . throwIO . EvalException "cardano-cli" args . BSLC.unpack $ outStr
 
   in flip with pure $ do
     tempDir <- maybe (managed (withSystemTempDirectory "tx-builder")) pure ecOutputDir
-    txBuilder <- liftIO . execStateT (runReaderT m ecTestnet) $ mempty
+    txBuilder <- liftIO . execStateT (runReaderT m (ChainInfo ecTestnet ecSocketPath)) $ mempty
     bodyFlags <- transactionBuilderToRawFlags tempDir ecProtocolParams ecUseRequiredSigners txBuilder fee
 
     liftIO $ do
