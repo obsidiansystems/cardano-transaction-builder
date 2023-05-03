@@ -32,7 +32,6 @@ import           Data.String
 import           System.IO
 import           System.Exit
 import           System.Process.Typed
--- import           Control.Applicative
 import           Text.Megaparsec
 import qualified Text.Megaparsec.Char.Lexer as L
 import           Text.Megaparsec.Char
