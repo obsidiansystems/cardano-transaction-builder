@@ -59,6 +59,9 @@ data EvalException = EvalException String [String] String
 
 instance Exception EvalException
 
+mkLovelaceValue :: Integer -> Value
+mkLovelaceValue n = fromString $ show n <> " lovelace"
+
 diffTokenMap :: Map String Integer -> Map String Integer -> Maybe (Map String Integer)
 diffTokenMap x y =
   let
