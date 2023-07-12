@@ -1,5 +1,6 @@
 module Cardano.Example where
 import Cardano.Transaction
+import Cardano.Transaction.Eval
 import Control.Monad
 
 buyer :: Address
@@ -22,4 +23,4 @@ transaction = do
   sign buyerSKey
 
 test :: IO ()
-test = void $ eval (mempty { ecTestnet = Just 1097911063}) transaction
+test = void $ evalEither (mempty { ecTestnet = Just 1097911063}) transaction

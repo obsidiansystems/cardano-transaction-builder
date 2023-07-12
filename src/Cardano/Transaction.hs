@@ -3,7 +3,7 @@
 
 module Cardano.Transaction where
 
-import System.Which
+import           System.Which
 import qualified Data.Map.Strict as M
 import           Data.Map (Map)
 import           Control.Monad.Managed
@@ -30,7 +30,6 @@ import           System.FilePath.Posix
 import           GHC.Generics
 import           Data.String
 import           System.IO
-import           System.Exit
 import           System.Process.Typed
 import           Text.Megaparsec
 import qualified Text.Megaparsec.Char.Lexer as L
@@ -1006,86 +1005,3 @@ instance Monoid EvalConfig where
 
 setSocketPath :: Maybe FilePath -> ProcessConfig stdin stdout stderr -> ProcessConfig stdin stdout stderr
 setSocketPath mfp = setEnv (maybe [] (\fp -> [("CARDANO_NODE_SOCKET_PATH", fp)]) mfp)
-
-evalTx :: EvalConfig -> Tx () -> IO String
-evalTx EvalConfig {..} (Tx m) =
-  let
-    runCardanoCli args = do
-      print args
-      (exitCode, outStr) <- readProcessInterleaved . setSocketPath ecSocketPath . proc cardanoCliPath $ args
-      case exitCode of
-        ExitSuccess -> pure $ BSLC.unpack outStr
-        ExitFailure _ -> liftIO . throwIO . EvalException "cardano-cli" args . BSLC.unpack $ outStr
-
-  in flip with pure $ do
-    tempDir <- maybe (managed (withSystemTempDirectory "tx-builder")) pure ecOutputDir
-    txBuilder <- liftIO . execStateT (runReaderT m (ChainInfo ecTestnet ecSocketPath)) $ mempty
-    bodyFlags <- transactionBuilderToBuildFlags tempDir ecTestnet ecProtocolParams ecUseRequiredSigners txBuilder
-
-    liftIO $ do
-      void $ runCardanoCli bodyFlags
-      readFile $ tempDir </> "body.txt"
-
-eval :: EvalConfig -> Tx () -> IO String
-eval EvalConfig {..} (Tx m) =
-  let
-    runCardanoCli args = do
-      print args
-      (exitCode, outStr) <- readProcessInterleaved . setSocketPath ecSocketPath . proc cardanoCliPath $ args
-      case exitCode of
-        ExitSuccess -> pure $ BSLC.unpack outStr
-        ExitFailure _ -> liftIO . throwIO . EvalException "cardano-cli" args . BSLC.unpack $ outStr
-
-  in flip with pure $ do
-    tempDir <- maybe (managed (withSystemTempDirectory "tx-builder")) pure ecOutputDir
-    txBuilder <- liftIO . execStateT (runReaderT m (ChainInfo ecTestnet ecSocketPath)) $ mempty
-    bodyFlags <- transactionBuilderToBuildFlags tempDir ecTestnet ecProtocolParams ecUseRequiredSigners txBuilder
-
-    liftIO $ do
-      void $ runCardanoCli bodyFlags
-      let
-        bodyFile = toSigningBodyFlags tempDir
-      -- get the txid
-      txId <- fmap init $ runCardanoCli $ ["transaction", "txid"] <> bodyFile
-
-      void . runCardanoCli . transactionBuilderToSignFlags tempDir ecTestnet $ txBuilder
-
-      void . runCardanoCli . mconcat $
-        [ [ "transaction", "submit" ]
-        , toTestnetFlags ecTestnet
-        , ["--tx-file", tempDir </> "signed-body.txt"]
-        ]
-
-      pure $ txId
-
-evalRaw :: EvalConfig -> Integer -> Tx () -> IO String
-evalRaw EvalConfig {..} fee (Tx m) =
-  let
-    runCardanoCli args = do
-      print args
-      (exitCode, outStr) <- readProcessInterleaved . setSocketPath ecSocketPath . proc cardanoCliPath $ args
-      case exitCode of
-        ExitSuccess -> pure $ BSLC.unpack outStr
-        ExitFailure _ -> liftIO . throwIO . EvalException "cardano-cli" args . BSLC.unpack $ outStr
-
-  in flip with pure $ do
-    tempDir <- maybe (managed (withSystemTempDirectory "tx-builder")) pure ecOutputDir
-    txBuilder <- liftIO . execStateT (runReaderT m (ChainInfo ecTestnet ecSocketPath)) $ mempty
-    bodyFlags <- transactionBuilderToRawFlags tempDir ecProtocolParams ecUseRequiredSigners txBuilder fee
-
-    liftIO $ do
-      void $ runCardanoCli bodyFlags
-      let
-        bodyFile = toSigningBodyFlags tempDir
-      -- get the txid
-      txId <- fmap init $ runCardanoCli $ ["transaction", "txid"] <> bodyFile
-
-      void . runCardanoCli . transactionBuilderToSignFlags tempDir ecTestnet $ txBuilder
-
-      void . runCardanoCli . mconcat $
-        [ [ "transaction", "submit" ]
-        , toTestnetFlags ecTestnet
-        , ["--tx-file", tempDir </> "signed-body.txt"]
-        ]
-
-      pure $ txId
